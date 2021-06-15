@@ -370,6 +370,147 @@ print_free_menu MACRO
     
 ENDM
 
+;Cargar la melodia desde el archivo .txt
+load_melody MACRO
+    
+    LOCAL melody2, next, read_next, open_error, read_error, partial_read, partial_chunk, close_file, exit, num, num2, multiply, finish
+    
+    CMP play,01h
+    JNE melody2
+    
+    LEA DX, m1_filename
+    
+    JMP next
+    
+    melody2:
+        LEA DX, m2_filename
+    
+    next:
+        ;Abrir el archivo
+        MOV AH, 3Dh
+    	MOV AL, 00h     ;Modo solo lectura
+    	;LEA DX, filename
+    	INT 21h
+    	
+    	;Error al abrir el archivo
+    	JC open_error
+    	
+    	;Asignar el manejador
+    	MOV handle, AX 
+    	
+    	MOV notes_list_position, 0000h
+	
+	;Leer el archivo hasta el final
+	read_next:
+	    LEA DX, buffer
+        MOV CX, 2           ;Tamanio del fragmento a leer (Se leeran 2 bytes cada vez)
+        MOV BX, handle
+        MOV AH, 3Fh         ;Lectura        
+        INT 21h   
+        
+        ;Error al abrir el archivo
+        JC  read_error
+        
+        CMP AX, CX          ;Comparar los bytes leidos contra los solicitados
+        JB partial_read
+        
+        LEA SI, buffer
+        MOV BX, notes_list_position
+         
+        ;Salto de linea, no hacer nada
+        CMP [SI], '_';0Dh
+        JE read_next
+        
+        ;Convertir el contenido del archivo
+        
+        ;Primer valor
+        XOR AX, AX
+        MOV AL, [SI]
+        
+        ;Si el primer valor es una letra
+        CMP AL, 41h ;A
+        JL num
+        
+        ;Convertir la letra a su valor decimal
+        ;EX. 41h - 37h = 0Ah (10d)
+        
+        SUB AL, 37h
+        JMP multiply
+        
+        num:
+            ;Convertir el valor ascci a valor decimal
+            ;EX. 31h - 30h = 01h (01d)
+            SUB AL, 30h
+        
+        ;Multiplicar por 10h (16d) el primer valor    
+        multiply:
+            MOV CL, 10h
+            MUL CL
+            
+        MOV CX, AX ;CX = primer valor * 10
+        
+        ;Segundo valor
+        XOR AX, AX
+        MOV AL, [SI + 01h]
+        
+        ;Si el segundo valor es una letra
+        CMP AL, 41h ;A
+        JL num2
+        
+        SUB AL, 37h
+        JMP finish
+        
+        num2:
+            SUB AL, 30h
+        
+        finish:
+            ADD CX, AX ;CX = CX + segundo valor
+            
+            LEA SI, notes_list
+            MOV [SI + BX], CL
+            
+            INC BX
+            MOV notes_list_position, BX
+            
+            ;Cerrar el archivo cuando se alcance el limite del array
+            CMP BX,3000
+            JGE close_file  ca  
+        
+        JMP read_next
+        
+        partial_read:
+            TEST AX, AX
+            JZ close_file
+            
+        partial_chunk:
+        
+        close_file:
+            MOV BX, handle
+            MOV AH, 3Eh     ;Cierra el archivo
+            INT 21h
+            
+            JMP exit
+	
+	open_error:
+	    ;Imprime el codigo de error
+	    ADD AL, 30h
+        MOV DL, AL
+        MOV AH, 02h
+        INT 21h
+        
+        JMP exit
+        
+    read_error:
+        ;Imprime el codigo de error
+	    ADD AL, 30h
+        MOV DL, AL
+        MOV AH, 02h
+        INT 21h
+        
+    exit:        
+    
+ENDM    
+
 ;Enciende el parlante del equipo
 set_speaker_on MACRO
     
@@ -516,7 +657,31 @@ start_melody MACRO
     ; Valor  Notas por segundo
     ; E90Bh  20
     ; BA6Fh  25
-    change_timer_frequency 0E90Bh
+    ; 5D37h  50
+    ; 4DAEh  60
+    ; 4295h  70
+    
+    CMP play,01h
+    JNE melody2
+    
+    MOV AX,0E90Bh
+    MOV timer_frequency,AX
+    MOV AX,600                  ;Total de notas a reproducir
+    MOV notes_size,AX           ;Notas por segundo * total de segundos a reproducir
+                                ;30s = 20 * 30 = 600
+    
+    JMP next
+    
+    melody2: 
+        MOV AX,4295h
+        MOV timer_frequency,AX
+        MOV AX,2100                 ;Total de notas a reproducir
+        MOV notes_size,AX           ;Notas por segundo * total de segundos a reproducir
+                                    ;30s = 70 * 30 = 2100
+    
+    next:
+    
+    PUSH AX
     
     MOV note_duration,0001h
     MOV status,01h                  ;01h = Reproduciendo
@@ -524,26 +689,19 @@ start_melody MACRO
     print_playing_menu
     cursor_position 03h, 06h, 00h
     
-    CMP play,01h
-    JNE melody2
+    ;Cargar en memoria la melodia
+    load_melody
     
-    MOV SI,OFFSET notes_table_melody1
-    MOV AX,notes_size_melody1
+    POP AX
     
-    JMP next
+    change_timer_frequency timer_frequency
+    MOV SI,OFFSET notes_list
+    MOV BX,0019h                ;25d. Total de # indicadores del progreso
+    DIV BL
+    MOV update_interval,AL      ;Contiene la frecuencia en como se agregan
+    INC update_interval         ;# al indicador del progreso (+1 para redondeo)
     
-    melody2:
-        MOV SI,OFFSET notes_table_melody2
-        MOV AX,notes_size_melody2
-    
-    next:
-        MOV notes_size,AX           ;Total de notas a reproducir
-        MOV BX,0019h                ;25d. Total de # indicadores del progreso
-        DIV BL
-        MOV update_interval,AL      ;Contiene la frecuencia en como se agregan
-        INC update_interval         ;# al indicador del progreso (+1 para redondeo)
-        
-        XOR CX,CX
+    XOR CX,CX
     
     begin:
         XOR BX,BX
@@ -616,14 +774,14 @@ ENDM
     menu_play_subtitle      DB  "=           [Play Mode - Preset Melody]           =",0Dh,0Ah,"$"
     menu_play_info          DB  "= Select a melody to play                         =",0Dh,0Ah,"$"
     menu_play_op1           DB  "=  1) Super Mario Bros (Ground Theme)             =",0Dh,0Ah,"$"
-    menu_play_op2           DB  "=  2) Dance Monkey                                =",0Dh,0Ah,"$"
+    menu_play_op2           DB  "=  2) The Legend of Zelda                         =",0Dh,0Ah,"$"
     menu_play_choice        DB  "Your choice: $"
     
     ;Menu (Reproduciendo)
     menu_playing_info1      DB  "= Playing: Super Mario Bros (Ground Theme)        =",0Dh,0Ah,"$"
-    menu_playing_info2      DB  "= Playing: Dance Monkey                           =",0Dh,0Ah,"$"
+    menu_playing_info2      DB  "= Playing: The Legend of Zelda                    =",0Dh,0Ah,"$"
     menu_playing_info1s     DB  "= Stopped: Super Mario Bros (Ground Theme)        =",0Dh,0Ah,"$"
-    menu_playing_info2s     DB  "= Stopped: Dance Monkey                           =",0Dh,0Ah,"$"
+    menu_playing_info2s     DB  "= Stopped: The Legend of Zelda                    =",0Dh,0Ah,"$"
     menu_playing_op         DB  "= ESC: Back                                       =",0Dh,0Ah,"$"
     menu_playing_loop       DB  "=           [                         ]           =",0Dh,0Ah,"$"
     
@@ -660,235 +818,21 @@ ENDM
     
     ;Melodias precargadas
     
-    ;Cada valor representa una accion a realizar, esta dada por:
-    ;   00-7F   =   Nota musical a reproducir
+    ;Los archivos .txt contienen ciertos valores
+    ;Cada valor representa una accion a realizar:
+    ;   00-7F   =   Nota musical a reproducir (Notas Musicales 0-128)
     ;   0FE     =   Nota de apagado de sonido
     ;   0FF     =   Saltar la nota, no se reproduce ni se apaga nada 
-    
-    notes_size_melody1      DW  500;1779 ;Total de notas
      
-	notes_table_melody1:    DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 040h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 046h, 0FFh, 0FEh, 045h
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 04Fh, 0FFh, 0FEh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 04Fh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 047h, 0FFh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 040h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 046h, 0FFh, 0FEh, 045h
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 04Fh, 0FFh, 0FEh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 04Fh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 047h, 0FFh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh, 04Eh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  044h, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 048h
-                        	DB  0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh, 04Eh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  054h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 054h, 0FFh, 0FEh, 054h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh, 04Eh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  044h, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 048h
-                        	DB  0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh, 04Eh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  044h, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 048h
-                        	DB  0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh, 04Eh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  054h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 054h, 0FFh, 0FEh, 054h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh, 04Eh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  044h, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 048h
-                        	DB  0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Bh, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh
-                        	DB  048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 043h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh
-                        	DB  048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 043h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 040h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 046h, 0FFh, 0FEh, 045h
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 04Fh, 0FFh, 0FEh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 04Fh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 047h, 0FFh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 040h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 046h, 0FFh, 0FEh, 045h
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 04Fh, 0FFh, 0FEh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 04Fh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 047h, 0FFh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 044h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh
-                        	DB  04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 051h, 0FFh, 0FEh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 04Fh, 0FFh, 0FEh, 0FFh, 04Dh, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh
-                        	DB  048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 043h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 044h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh
-                        	DB  04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 04Ah, 0FFh, 0FEh, 0FFh, 048h, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 044h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh
-                        	DB  04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 051h, 0FFh, 0FEh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 04Fh, 0FFh, 0FEh, 0FFh, 04Dh, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh
-                        	DB  048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 043h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 044h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh
-                        	DB  04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 04Ah, 0FFh, 0FEh, 0FFh, 048h, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh
-                        	DB  048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 043h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ah, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh
-                        	DB  048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 043h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 048h, 0FFh, 0FEh, 04Ch, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Fh, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 044h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh
-                        	DB  04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 051h, 0FFh, 0FEh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 04Fh, 0FFh, 0FEh, 0FFh, 04Dh, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh
-                        	DB  048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh, 043h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 0FFh, 0FEh, 048h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 043h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 044h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 045h, 0FFh, 0FEh
-                        	DB  04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 047h, 0FFh, 0FEh, 04Dh, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 04Dh, 0FFh
-                        	DB  0FEh, 04Dh, 0FFh, 0FEh, 0FFh, 04Ch, 0FFh, 0FEh, 0FFh, 04Ah, 0FFh, 0FEh, 0FFh, 048h, 0FFh, 0FEh
-                        	DB  02Fh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh
-    
-    
-    notes_size_melody2      DW  500;1679 ;Total de notas
-    
-    notes_table_melody2:    DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  055h, 042h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 0FEh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 055h, 0FFh, 0FFh
-                        	DB  0FEh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 042h, 0FFh, 0FEh, 051h, 0FFh
-                        	DB  0FEh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 040h, 0FFh, 0FEh, 053h
-                        	DB  0FFh, 0FEh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 042h, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 0FEh, 055h, 0FFh, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h
-                        	DB  0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 045h
-                        	DB  0FFh, 0FEh, 055h, 0FFh, 0FFh, 0FEh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 051h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh
-                        	DB  042h, 0FFh, 0FEh, 051h, 0FFh, 0FEh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 053h
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 053h, 0FFh, 0FEh
-                        	DB  0FFh, 040h, 0FFh, 0FEh, 053h, 0FFh, 0FEh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 0FFh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 042h, 055h, 0FFh, 0FFh, 0FEh, 0FFh
-                        	DB  0FFh, 0FEh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh, 055h, 0FFh, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  055h, 0FFh, 0FFh, 0FEh, 045h, 0FFh, 0FEh, 055h, 0FFh, 0FFh, 0FEh, 051h, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h
-                        	DB  0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh, 0FFh, 051h, 0FFh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 051h, 0FFh, 0FEh, 0FFh, 042h, 0FFh, 0FEh, 051h, 0FFh, 0FEh, 0FFh, 053h, 0FFh, 0FEh, 028h
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FEh
-                        	DB  034h, 025h, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FEh, 0FEh, 0FFh, 036h, 04Eh, 042h, 055h, 051h, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh
-                        	DB  0FEh, 04Eh, 055h, 051h, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 051h, 055h, 04Eh, 0FFh, 0FFh
-                        	DB  0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 04Eh, 055h, 051h, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 04Eh
-                        	DB  055h, 051h, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 051h, 055h, 04Eh, 0FFh, 0FFh, 0FEh, 0FEh
-                        	DB  0FEh, 0FFh, 0FFh, 04Eh, 055h, 051h, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 045h, 0FFh, 0FEh, 04Eh, 055h
-                        	DB  051h, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FEh, 04Eh, 051h, 04Ah, 032h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ah, 051h
-                        	DB  04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh
-                        	DB  0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Eh, 051h, 04Ah, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 042h, 0FFh
-                        	DB  0FEh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FEh, 050h, 053h, 04Ch, 034h, 0FFh, 0FEh
-                        	DB  0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ch, 053h, 050h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 050h, 053h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 053h, 050h, 0FFh, 0FEh
-                        	DB  0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 053h, 050h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 050h
-                        	DB  053h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 053h, 050h, 0FFh, 0FEh, 0FEh, 0FEh
-                        	DB  0FFh, 040h, 0FFh, 0FEh, 04Ch, 053h, 050h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FEh, 04Ch, 050h, 049h
-                        	DB  031h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 049h, 050h, 04Ch, 0FFh, 0FEh, 0FEh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 049h, 050h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 049h, 050h
-                        	DB  04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ch, 050h, 049h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh
-                        	DB  0FFh, 0FFh, 049h, 050h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 049h, 050h, 04Ch, 0FFh
-                        	DB  0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FEh, 036h, 0FFh, 051h, 055h, 042h
-                        	DB  04Eh, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FEh, 051h, 055h, 04Eh, 0FFh, 0FFh, 0FEh, 0FEh
-                        	DB  0FEh, 0FFh, 0FFh, 051h, 055h, 04Eh, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 051h, 055h, 04Eh
-                        	DB  0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 051h, 055h, 04Eh, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh
-                        	DB  0FFh, 051h, 055h, 04Eh, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 051h, 055h, 04Eh, 0FFh, 0FFh
-                        	DB  0FEh, 0FEh, 0FEh, 045h, 0FFh, 0FEh, 04Eh, 055h, 051h, 0FFh, 0FFh, 0FEh, 0FEh, 0FEh, 0FEh, 04Eh
-                        	DB  051h, 04Ah, 032h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh
-                        	DB  0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh
-                        	DB  04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh
-                        	DB  0FEh, 0FFh, 0FFh, 0FFh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 04Eh, 051h
-                        	DB  04Ah, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 042h, 0FFh, 0FEh, 04Ah, 051h, 04Eh, 0FFh, 0FEh, 0FEh, 0FEh
-                        	DB  0FFh, 0FEh, 050h, 053h, 04Ch, 034h, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 050h
-                        	DB  053h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 053h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh
-                        	DB  0FFh, 0FFh, 0FFh, 050h, 053h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 053h, 04Ch
-                        	DB  0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 050h, 053h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh
-                        	DB  0FFh, 050h, 053h, 04Ch, 0FFh, 0FEh, 0FEh, 0FEh, 0FFh, 040h, 0FFh, 0FEh, 04Ch, 053h, 050h, 0FFh
-                        	DB  0FEh, 0FEh, 0FEh, 0FFh, 0FEh, 04Ch, 050h, 049h, 0FEh, 0FEh, 0FEh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
-                        	DB  0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 065h, 064h, 006h, 00Ah, 007h, 0FEh
-    
+	notes_list              DB  3000 DUP(255)
+	notes_list_position     DW  0000h
+	 
+	m1_filename             DB 'm1.txt', 0 
+	m2_filename             DB 'm2.txt', 0
+	
+	handle                  DW 0
+	buffer                  DB 2 DUP(0)   
+
     ;Modo reproduccion
     play                    DB  00h
     status                  DB  00h
@@ -901,6 +845,7 @@ ENDM
     naming                  DB  01h
     
     ;General
+    timer_frequency         DW  0000h
     note_duration           DW  0007h       ;Default (0007h)
 
 .CODE    
